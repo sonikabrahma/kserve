@@ -12,85 +12,35 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import base64
 import os
-import json
-import pytest
+import numpy as np
 from kubernetes import client
-from kserve import (
-    constants,
-    KServeClient,
-    V1beta1InferenceService,
-    V1beta1InferenceServiceSpec,
-    V1beta1PredictorSpec,
-    V1beta1TorchServeSpec,
-    V1beta1ModelSpec,
-    V1beta1ModelFormat,
-)
-from kubernetes.client import V1ResourceRequirements, V1ContainerPort, V1Container, V1EnvVar
+from kserve import KServeClient
+from kserve import constants
+from kserve import V1beta1PredictorSpec
+from kserve import V1beta1TFServingSpec
+from kserve import V1beta1InferenceServiceSpec
+from kserve import V1beta1InferenceService
+from kserve import V1beta1ModelSpec, V1beta1ModelFormat
+from kubernetes.client import V1ResourceRequirements
+import pytest
 
-from ..common.utils import KSERVE_TEST_NAMESPACE, predict_isvc, predict_grpc
+from ..common.utils import predict_isvc
+from ..common.utils import KSERVE_TEST_NAMESPACE
+
 
 @pytest.mark.predictor
 @pytest.mark.asyncio(scope="session")
-async def test_torchserve_kserve(rest_v1_client):
-    service_name = "mnist"
+async def test_tensorflow_kserve(rest_v1_client):
+    service_name = "isvc-tensorflow"
     predictor = V1beta1PredictorSpec(
         min_replicas=1,
-        pytorch=V1beta1TorchServeSpec(
-            env=[
-                V1EnvVar(name="TEMP", value="/tmp"),
-            ],
-            storage_uri="gs://kfserving-examples/models/torchserve/image_classifier/v1",
-            protocol_version="v1",
+        tensorflow=V1beta1TFServingSpec(
+            storage_uri="gs://kfserving-examples/models/tensorflow/flowers",
             resources=V1ResourceRequirements(
-                requests={"cpu": "100m", "memory": "256Mi"},
-                limits={"cpu": "1", "memory": "1Gi"},
+                requests={"cpu": "10m", "memory": "256Mi"},
+                limits={"cpu": "100m", "memory": "512Mi"},
             ),
-			ports=[V1ContainerPort(container_port=8085, protocol="TCP")],
-
-        ),
-    )
-
-
-    isvc = V1beta1InferenceService(
-        api_version=constants.KSERVE_V1BETA1,
-        kind=constants.KSERVE_KIND,
-        metadata=client.V1ObjectMeta(
-            name=service_name, namespace=KSERVE_TEST_NAMESPACE
-        ),
-        spec=V1beta1InferenceServiceSpec(predictor=predictor),
-    )
-
-    kserve_client = KServeClient(
-        config_file=os.environ.get("KUBECONFIG", "~/.kube/config")
-    )
-    kserve_client.create(isvc)
-    kserve_client.wait_isvc_ready(service_name, namespace=KSERVE_TEST_NAMESPACE)
-
-    res = await predict_isvc(
-        rest_v1_client, service_name, "./data/torchserve_input.json"
-    )
-    assert res["predictions"][0] == 2
-    kserve_client.delete(service_name, KSERVE_TEST_NAMESPACE)
-
-@pytest.mark.predictor
-@pytest.mark.asyncio(scope="session")
-async def test_torchserve_v2_kserve(rest_v2_client):
-    service_name = "mnist-v2"
-    predictor = V1beta1PredictorSpec(
-        min_replicas=1,
-        pytorch=V1beta1TorchServeSpec(
-            env=[
-                V1EnvVar(name="TEMP", value="/tmp"),
-            ],
-            storage_uri="gs://kfserving-examples/models/torchserve/image_classifier/v2",
-            protocol_version="v2",
-            resources=V1ResourceRequirements(
-                requests={"cpu": "100m", "memory": "256Mi"},
-                limits={"cpu": "1", "memory": "1Gi"},
-            ),
-            ports=[V1ContainerPort(container_port=8085, protocol="TCP")],
         ),
     )
 
@@ -108,15 +58,47 @@ async def test_torchserve_v2_kserve(rest_v2_client):
     )
     kserve_client.create(isvc)
     kserve_client.wait_isvc_ready(service_name, namespace=KSERVE_TEST_NAMESPACE)
+    res = await predict_isvc(rest_v1_client, service_name, "./data/flower_input.json")
+    assert np.argmax(res["predictions"][0].get("scores")) == 0
 
-    res = await predict_isvc(
-        rest_v2_client,
-        service_name,
-        "./data/torchserve_input_v2.json",
-        model_name="mnist",
+    # Delete the InferenceService
+    kserve_client.delete(service_name, namespace=KSERVE_TEST_NAMESPACE)
+
+
+@pytest.mark.predictor
+@pytest.mark.asyncio(scope="session")
+async def test_tensorflow_runtime_kserve(rest_v1_client):
+    service_name = "isvc-tensorflow-runtime"
+    predictor = V1beta1PredictorSpec(
+        min_replicas=1,
+        model=V1beta1ModelSpec(
+            model_format=V1beta1ModelFormat(
+                name="tensorflow",
+            ),
+            storage_uri="gs://kfserving-examples/models/tensorflow/flowers",
+            resources=V1ResourceRequirements(
+                requests={"cpu": "10m", "memory": "256Mi"},
+                limits={"cpu": "100m", "memory": "512Mi"},
+            ),
+        ),
     )
-    assert res.outputs[0].data == [1]
-    kserve_client.delete(service_name, KSERVE_TEST_NAMESPACE)
 
+    isvc = V1beta1InferenceService(
+        api_version=constants.KSERVE_V1BETA1,
+        kind=constants.KSERVE_KIND,
+        metadata=client.V1ObjectMeta(
+            name=service_name, namespace=KSERVE_TEST_NAMESPACE
+        ),
+        spec=V1beta1InferenceServiceSpec(predictor=predictor),
+    )
 
+    kserve_client = KServeClient(
+        config_file=os.environ.get("KUBECONFIG", "~/.kube/config")
+    )
+    kserve_client.create(isvc)
+    kserve_client.wait_isvc_ready(service_name, namespace=KSERVE_TEST_NAMESPACE)
+    res = await predict_isvc(rest_v1_client, service_name, "./data/flower_input.json")
+    assert np.argmax(res["predictions"][0].get("scores")) == 0
 
+    # Delete the InferenceService
+    kserve_client.delete(service_name, namespace=KSERVE_TEST_NAMESPACE)
