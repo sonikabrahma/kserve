@@ -11,6 +11,5 @@
       }
     ],
     "temperature": 0,
-    "max_tokens": 20,
-    "chat_template": "{% for message in messages %}{{ message.content }}{{ eos_token }}{% endfor %}"
+    "max_tokens": 20
 }
